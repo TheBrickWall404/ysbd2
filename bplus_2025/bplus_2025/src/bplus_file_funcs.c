@@ -357,4 +357,103 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
 
             free(temp);
             BF_Block_SetDirty(new_block);
-            BF_
+            BF_UnpinBlock(new_block);
+            BF_Block_Destroy(&new_block);
+            
+            BF_Block_SetDirty(block);
+        }
+    } 
+    else {
+        // --- INDEX NODE ---
+        IndexEntry* entries = (IndexEntry*)(data + sizeof(BlockHeader));
+        int child_to_go = header->next_block_id; // Default: P0 (Leftmost)
+
+        // Find correct child
+        int i;
+        for(i=0; i < header->count; i++) {
+            if (record_get_key(schema, record) < entries[i].key) break;
+            child_to_go = entries[i].block_id;
+        }
+
+        // --- ΑΝΑΔΡΟΜΗ ---
+        result = _insert_recursive(file_desc, child_to_go, record, schema);
+
+        if (result.error) {
+            BF_UnpinBlock(block);
+            BF_Block_Destroy(&block);
+            return result;
+        }
+
+        if (result.split) {
+            // Το παιδί έσπασε. Πρέπει να εισάγουμε (mid_key, new_block_id) στον τρέχοντα Index Node
+            if (indexnode_insert(data, result.mid_key, result.new_block_id) == 0) {
+                BF_Block_SetDirty(block);
+                result.split = 0; // Το split σταμάτησε εδώ, χωρούσε
+            } else {
+                // --- INDEX SPLIT ---
+                BF_Block* new_idx;
+                BF_Block_Init(&new_idx);
+                if (BF_AllocateBlock(file_desc, new_idx) != BF_OK) {
+                   result.error = 1;
+                   // No cleanup needed here as new_idx failed
+                } else {
+                    int new_idx_id;
+                    BF_GetBlockCounter(file_desc, &new_idx_id); 
+                    new_idx_id--;
+                    
+                    char* new_data = BF_Block_GetData(new_idx);
+                    indexnode_init(new_data);
+
+                    // Temp Buffer για Index Entries
+                    int entry_sz = sizeof(IndexEntry);
+                    int total = header->count + 1;
+                    IndexEntry* temp_entries = malloc(total * entry_sz);
+                    
+                    // Merge sort logic για το temp buffer με το νέο entry που ανεβαίνει
+                    int inserted = 0;
+                    for(int k=0, m=0; k < total; k++) {
+                        if (!inserted && (m >= header->count || result.mid_key < entries[m].key)) {
+                            temp_entries[k].key = result.mid_key;
+                            temp_entries[k].block_id = result.new_block_id;
+                            inserted = 1;
+                        } else {
+                            temp_entries[k] = entries[m++];
+                        }
+                    }
+
+                    // Στα Index Splits, το μεσαίο κλειδί PUSH UP (δεν μένει στους κόμβους)
+                    int split_pt = total / 2;
+                    int key_up = temp_entries[split_pt].key; 
+
+                    // Αριστερός κόμβος (τρέχων)
+                    header->count = split_pt;
+                    memcpy(entries, temp_entries, split_pt * entry_sz);
+
+                    // Δεξιός κόμβος (νέος)
+                    BlockHeader* new_h = (BlockHeader*)new_data;
+                    // O pointer που συνόδευε το κλειδί που ανέβηκε γίνεται το P0 του νέου κόμβου
+                    new_h->next_block_id = temp_entries[split_pt].block_id;
+                    
+                    new_h->count = total - split_pt - 1; // -1 γιατί το key_up φεύγει
+                    memcpy(new_data + sizeof(BlockHeader), &temp_entries[split_pt + 1], new_h->count * entry_sz);
+
+                    // Update result για τον πατέρα
+                    result.split = 1;
+                    result.new_block_id = new_idx_id;
+                    result.mid_key = key_up;
+
+                    free(temp_entries);
+                    BF_Block_SetDirty(new_idx);
+                    BF_UnpinBlock(new_idx);
+                    BF_Block_Destroy(&new_idx);
+                    
+                    BF_Block_SetDirty(block);
+                }
+            }
+        }
+    }
+
+    BF_UnpinBlock(block);
+    BF_Block_Destroy(&block);
+    return result;
+}
