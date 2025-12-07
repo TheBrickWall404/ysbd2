@@ -7,21 +7,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-// --- ΜΑΚΡΟΕΝΤΟΛΗ ΓΙΑ ΕΛΕΓΧΟ ΛΑΘΩΝ BF ---
-// Πρέπει να οριστεί εδώ, ΠΡΙΝ από οποιαδήποτε χρήση της μέσα στις συναρτήσεις.
+// --- ΠΡΟΣΟΧΗ: Το define ΠΡΕΠΕΙ να είναι ΕΔΩ, πριν από τις συναρτήσεις ---
 #define CALL_BF(call) { BF_ErrorCode c = call; if (c != BF_OK) { BF_PrintError(c); return -1; } }
 
-// --- Δομή για την επιστροφή από την αναδρομή (Member B) ---
+// Δομή για την επιστροφή από την αναδρομή (Member B)
 typedef struct {
     int split;        // 1 αν έγινε split
     int new_block_id; // Το ID του νέου δεξιού block
     int mid_key;      // Το κλειδί που ανεβαίνει στον πατέρα
-    int error;        // 1 αν υπήρξε σφάλμα (π.χ. duplicate key, BF error)
+    int error;        // 1 αν υπήρξε σφάλμα
 } InsertResult;
 
-// Forward declaration της αναδρομικής συνάρτησης
+// Forward declaration
 InsertResult _insert_recursive(int file_desc, int current_block_id, const Record* record, const TableSchema* schema);
-
 
 // ==========================================================
 // --- Υλοποίηση Member A (Create, Open, Close, Find) ---
@@ -29,25 +27,25 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
 
 int bplus_create_file(const TableSchema *schema, const char *fileName)
 {
-    // 1. Δημιουργία αρχείου στο επίπεδο BF
+    // 1. Δημιουργία αρχείου
     CALL_BF(BF_CreateFile(fileName));
 
-    // 2. Άνοιγμα για να γράψουμε το Block 0 (Metadata)
+    // 2. Άνοιγμα για να γράψουμε το Block 0
     int fd;
     CALL_BF(BF_OpenFile(fileName, &fd));
 
     // 3. Allocation του Block 0
     BF_Block* block;
     BF_Block_Init(&block);
-    CALL_BF(BF_AllocateBlock(fd, block)); // Γίνεται το Block 0
+    CALL_BF(BF_AllocateBlock(fd, block)); 
 
     // 4. Εγγραφή Metadata
     char* data = BF_Block_GetData(block);
     BPlusMeta* meta = (BPlusMeta*)data;
 
-    meta->file_type_magic = 12345; // Magic number για αναγνώριση
-    meta->root_block_id = -1;      // Το δέντρο είναι άδειο αρχικά
-    meta->schema = *schema;        // Αντιγραφή του σχήματος
+    meta->file_type_magic = 12345;
+    meta->root_block_id = -1;
+    meta->schema = *schema;
 
     // 5. Αποθήκευση και κλείσιμο
     BF_Block_SetDirty(block);
@@ -60,10 +58,8 @@ int bplus_create_file(const TableSchema *schema, const char *fileName)
 
 int bplus_open_file(const char *fileName, int *file_desc, BPlusMeta **metadata)
 {
-    // 1. Άνοιγμα αρχείου
     CALL_BF(BF_OpenFile(fileName, file_desc));
 
-    // 2. Ανάγνωση Block 0
     BF_Block* block;
     BF_Block_Init(&block);
     if (BF_GetBlock(*file_desc, 0, block) != BF_OK) {
@@ -74,18 +70,16 @@ int bplus_open_file(const char *fileName, int *file_desc, BPlusMeta **metadata)
     char* data = BF_Block_GetData(block);
     BPlusMeta* stored_meta = (BPlusMeta*)data;
 
-    // 3. Έλεγχος Magic Number
     if (stored_meta->file_type_magic != 12345) {
         BF_UnpinBlock(block);
         BF_Block_Destroy(&block);
-        return -1; // Δεν είναι σωστό αρχείο B+
+        return -1;
     }
 
-    // 4. Φόρτωση metadata στη μνήμη (Heap)
     *metadata = malloc(sizeof(BPlusMeta));
     memcpy(*metadata, stored_meta, sizeof(BPlusMeta));
 
-    BF_UnpinBlock(block); // Δεν αλλάξαμε τίποτα, άρα όχι Dirty
+    BF_UnpinBlock(block);
     BF_Block_Destroy(&block);
 
     return 0;
@@ -93,25 +87,18 @@ int bplus_open_file(const char *fileName, int *file_desc, BPlusMeta **metadata)
 
 int bplus_close_file(int file_desc, BPlusMeta* metadata)
 {
-    // 1. Ενημέρωση του Block 0 (γιατί μπορεί να άλλαξε το root_block_id)
     BF_Block* block;
     BF_Block_Init(&block);
     
-    // Πρέπει να πάρουμε το Block 0
     if (BF_GetBlock(file_desc, 0, block) == BF_OK) {
         char* data = BF_Block_GetData(block);
-        // Αντιγράφουμε τα ενημερωμένα metadata από τη μνήμη στο δίσκο
         memcpy(data, metadata, sizeof(BPlusMeta));
-        
         BF_Block_SetDirty(block);
         BF_UnpinBlock(block);
     }
     BF_Block_Destroy(&block);
 
-    // 2. Κλείσιμο αρχείου BF
     CALL_BF(BF_CloseFile(file_desc));
-
-    // 3. Αποδέσμευση μνήμης metadata
     free(metadata);
 
     return 0;
@@ -120,8 +107,6 @@ int bplus_close_file(int file_desc, BPlusMeta* metadata)
 int bplus_record_find(int file_desc, const BPlusMeta *metadata, int key, Record** out_record)
 {
     *out_record = NULL;
-
-    // Αν το δέντρο είναι άδειο
     if (metadata->root_block_id == -1) {
         return -1; 
     }
@@ -130,7 +115,6 @@ int bplus_record_find(int file_desc, const BPlusMeta *metadata, int key, Record*
     BF_Block* block;
     BF_Block_Init(&block);
 
-    // Πλοήγηση μέχρι να βρούμε Φύλλο
     while (1) {
         if (BF_GetBlock(file_desc, current_block_id, block) != BF_OK) {
             BF_Block_Destroy(&block);
@@ -141,11 +125,9 @@ int bplus_record_find(int file_desc, const BPlusMeta *metadata, int key, Record*
         BlockHeader* header = (BlockHeader*)data;
 
         if (header->type == BP_TYPE_INDEX) {
-            // --- INDEX NODE ---
             IndexEntry* entries = (IndexEntry*)(data + sizeof(BlockHeader));
-            int next_id = header->next_block_id; // Default P0 (Leftmost)
+            int next_id = header->next_block_id; 
 
-            // Linear search για το σωστό παιδί
             for (int i = 0; i < header->count; i++) {
                 if (key < entries[i].key) {
                     break;
@@ -153,15 +135,10 @@ int bplus_record_find(int file_desc, const BPlusMeta *metadata, int key, Record*
                 next_id = entries[i].block_id;
             }
 
-            // Αλλαγή μπλοκ
             current_block_id = next_id;
-            
-            BF_UnpinBlock(block); // Ξεκαρφίτσωμα τρέχοντος
-            // (Το loop θα ξαναπάρει το νέο block στην αρχή)
+            BF_UnpinBlock(block); 
         } 
         else {
-            // --- DATA NODE (LEAF) ---
-            // Είμαστε στο φύλλο, ψάχνουμε το κλειδί
             char* records_start = data + sizeof(BlockHeader);
             int rec_size = metadata->schema.record_size;
             int key_offset = metadata->schema.offsets[metadata->schema.key_index];
@@ -171,25 +148,20 @@ int bplus_record_find(int file_desc, const BPlusMeta *metadata, int key, Record*
                 int current_key = *(int*)(records_start + i * rec_size + key_offset);
                 
                 if (current_key == key) {
-                    // ΒΡΕΘΗΚΕ!
                     *out_record = malloc(sizeof(Record));
-                    // Χρήση της deserialize που φτιάξαμε
                     deserialize_record(records_start + i * rec_size, *out_record, &metadata->schema);
                     found = 1;
                     break;
                 }
-                // Επειδή είναι ταξινομημένα, αν περάσουμε το κλειδί, δεν υπάρχει
                 if (current_key > key) break;
             }
 
             BF_UnpinBlock(block);
             BF_Block_Destroy(&block);
-
             return found ? 0 : -1;
         }
     }
 }
-
 
 // ==========================================================
 // --- Υλοποίηση Member B (Insert & Helpers) ---
@@ -197,12 +169,10 @@ int bplus_record_find(int file_desc, const BPlusMeta *metadata, int key, Record*
 
 int bplus_record_insert(int file_desc, BPlusMeta *metadata, const Record *record)
 {
-    // 1. Περίπτωση: Άδειο Δέντρο (Δημιουργία πρώτου φύλλου-ρίζας)
     if (metadata->root_block_id == -1) {
         BF_Block* new_block;
         BF_Block_Init(&new_block);
         
-        // Error Handling για BF
         if (BF_AllocateBlock(file_desc, new_block) != BF_OK) {
             BF_Block_Destroy(&new_block);
             return -1;
@@ -210,10 +180,9 @@ int bplus_record_insert(int file_desc, BPlusMeta *metadata, const Record *record
         
         int new_id;
         BF_GetBlockCounter(file_desc, &new_id);
-        new_id--; // Το ID του νέου μπλοκ
+        new_id--;
 
         datanode_init(BF_Block_GetData(new_block));
-        // Δεν χρειάζεται έλεγχος για split εδώ, είναι άδειο
         datanode_insert(BF_Block_GetData(new_block), record, &metadata->schema);
 
         metadata->root_block_id = new_id;
@@ -225,14 +194,12 @@ int bplus_record_insert(int file_desc, BPlusMeta *metadata, const Record *record
         return new_id; 
     }
 
-    // 2. Αναδρομική Εισαγωγή
     InsertResult res = _insert_recursive(file_desc, metadata->root_block_id, record, &metadata->schema);
 
     if (res.error) {
-        return -1; // Υπήρξε σφάλμα (π.χ. duplicate key ή BF error)
+        return -1;
     }
 
-    // 3. Root Split: Αν η ρίζα έσπασε, φτιάχνουμε νέα ρίζα (Index Node)
     if (res.split) {
         BF_Block* new_root;
         BF_Block_Init(&new_root);
@@ -246,17 +213,12 @@ int bplus_record_insert(int file_desc, BPlusMeta *metadata, const Record *record
         new_root_id--;
 
         char* data = BF_Block_GetData(new_root);
-        indexnode_init(data); // header->next_block_id = -1
+        indexnode_init(data); 
         BlockHeader* h = (BlockHeader*)data;
 
-        // Ο παλιός root γίνεται το αριστερό παιδί (P0)
         h->next_block_id = metadata->root_block_id;
-        
-        // Το mid_key και ο δείκτης στο δεξί τμήμα μπαίνουν ως entry (Key, P1)
-        // Σημείωση: Στα Index nodes το κλειδί "ανεβαίνει"
         indexnode_insert(data, res.mid_key, res.new_block_id);
 
-        // Ενημέρωση Metadata
         metadata->root_block_id = new_root_id;
 
         BF_Block_SetDirty(new_root);
@@ -264,7 +226,7 @@ int bplus_record_insert(int file_desc, BPlusMeta *metadata, const Record *record
         BF_Block_Destroy(&new_root);
     }
 
-    return 0; // Success
+    return 0;
 }
 
 InsertResult _insert_recursive(int file_desc, int current_block_id, const Record* record, const TableSchema* schema) {
@@ -272,7 +234,6 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
     BF_Block* block;
     BF_Block_Init(&block);
     
-    // Safety check: Αν αποτύχει το GetBlock
     if(BF_GetBlock(file_desc, current_block_id, block) != BF_OK) {
         BF_Block_Destroy(&block);
         result.error = 1;
@@ -283,22 +244,16 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
     BlockHeader* header = (BlockHeader*)data;
 
     if (header->type == BP_TYPE_DATA) {
-        // --- ΦΥΛΛΟ (Leaf Node) ---
-        
         int res = datanode_insert(data, record, schema);
         
         if (res == 0) {
-            // Επιτυχία, χωρούσε
             BF_Block_SetDirty(block);
         } 
         else if (res == -2) {
-            // Duplicate Key: Σταματάμε!
             printf("Error: Duplicate key %d\n", record_get_key(schema, record));
             result.error = 1; 
-            // Δεν κάνουμε SetDirty γιατί δεν αλλάξαμε τίποτα
         }
         else {
-            // res == -1: Το φύλλο είναι γεμάτο -> LEAF SPLIT
             BF_Block* new_block;
             BF_Block_Init(&new_block);
             if (BF_AllocateBlock(file_desc, new_block) != BF_OK) {
@@ -316,21 +271,19 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
             char* new_data = BF_Block_GetData(new_block);
             datanode_init(new_data);
 
-            // Temp Buffer για ταξινόμηση και split
             int rec_size = schema->record_size;
             int total_recs = header->count + 1;
-            int split_pt = (total_recs + 1) / 2; // (N+1)/2 records στο αριστερό
+            int split_pt = (total_recs + 1) / 2;
             
             char* temp = malloc(total_recs * rec_size);
             char* old_recs = data + sizeof(BlockHeader);
             
-            // Logic: Merge old records + new record into temp (Insertion Sort logic)
             int inserted = 0;
             int key = record_get_key(schema, record);
             int key_offset = schema->offsets[schema->key_index];
 
             for(int i=0, j=0; i < total_recs; i++) {
-                int curr_key_old = (j < header->count) ? *(int*)(old_recs + j*rec_size + key_offset) : 2147483647; // MAX_INT
+                int curr_key_old = (j < header->count) ? *(int*)(old_recs + j*rec_size + key_offset) : 2147483647;
                 
                 if (!inserted && key < curr_key_old) {
                     serialize_record(temp + i*rec_size, record, schema);
@@ -341,24 +294,18 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
                 }
             }
 
-            // Ενημέρωση Αριστερού (Τρέχοντος) Κόμβου
             header->count = split_pt;
             memcpy(old_recs, temp, split_pt * rec_size);
 
-            // Ενημέρωση Δεξιού (Νέου) Κόμβου
             BlockHeader* new_h = (BlockHeader*)new_data;
             new_h->count = total_recs - split_pt;
             memcpy(new_data + sizeof(BlockHeader), temp + split_pt * rec_size, new_h->count * rec_size);
 
-            // Update Pointers: Λίστα συνδεδεμένων φύλλων
             new_h->next_block_id = header->next_block_id;
             header->next_block_id = new_block_id;
 
-            // Επιστροφή αποτελέσματος split
             result.split = 1;
             result.new_block_id = new_block_id;
-            // Στα Leaf Splits, το κλειδί του split "αντιγράφεται" προς τα πάνω
-            // Είναι το πρώτο κλειδί του δεξιού κόμβου
             result.mid_key = *(int*)(temp + split_pt * rec_size + key_offset);
 
             free(temp);
@@ -370,18 +317,15 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
         }
     } 
     else {
-        // --- INDEX NODE ---
         IndexEntry* entries = (IndexEntry*)(data + sizeof(BlockHeader));
-        int child_to_go = header->next_block_id; // Default: P0 (Leftmost)
+        int child_to_go = header->next_block_id;
 
-        // Find correct child
         int i;
         for(i=0; i < header->count; i++) {
             if (record_get_key(schema, record) < entries[i].key) break;
             child_to_go = entries[i].block_id;
         }
 
-        // --- ΑΝΑΔΡΟΜΗ ---
         result = _insert_recursive(file_desc, child_to_go, record, schema);
 
         if (result.error) {
@@ -391,12 +335,10 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
         }
 
         if (result.split) {
-            // Το παιδί έσπασε. Πρέπει να εισάγουμε (mid_key, new_block_id) στον τρέχοντα Index Node
             if (indexnode_insert(data, result.mid_key, result.new_block_id) == 0) {
                 BF_Block_SetDirty(block);
-                result.split = 0; // Το split σταμάτησε εδώ, χωρούσε
+                result.split = 0; 
             } else {
-                // --- INDEX SPLIT ---
                 BF_Block* new_idx;
                 BF_Block_Init(&new_idx);
                 if (BF_AllocateBlock(file_desc, new_idx) != BF_OK) {
@@ -409,12 +351,10 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
                     char* new_data = BF_Block_GetData(new_idx);
                     indexnode_init(new_data);
 
-                    // Temp Buffer για Index Entries
                     int entry_sz = sizeof(IndexEntry);
                     int total = header->count + 1;
                     IndexEntry* temp_entries = malloc(total * entry_sz);
                     
-                    // Merge sort logic για το temp buffer με το νέο entry που ανεβαίνει
                     int inserted = 0;
                     for(int k=0, m=0; k < total; k++) {
                         if (!inserted && (m >= header->count || result.mid_key < entries[m].key)) {
@@ -426,23 +366,18 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
                         }
                     }
 
-                    // Στα Index Splits, το μεσαίο κλειδί PUSH UP (δεν μένει στους κόμβους)
                     int split_pt = total / 2;
                     int key_up = temp_entries[split_pt].key; 
 
-                    // Αριστερός κόμβος (τρέχων)
                     header->count = split_pt;
                     memcpy(entries, temp_entries, split_pt * entry_sz);
 
-                    // Δεξιός κόμβος (νέος)
                     BlockHeader* new_h = (BlockHeader*)new_data;
-                    // O pointer που συνόδευε το κλειδί που ανέβηκε γίνεται το P0 του νέου κόμβου
                     new_h->next_block_id = temp_entries[split_pt].block_id;
                     
-                    new_h->count = total - split_pt - 1; // -1 γιατί το key_up φεύγει
+                    new_h->count = total - split_pt - 1; 
                     memcpy(new_data + sizeof(BlockHeader), &temp_entries[split_pt + 1], new_h->count * entry_sz);
 
-                    // Update result για τον πατέρα
                     result.split = 1;
                     result.new_block_id = new_idx_id;
                     result.mid_key = key_up;
