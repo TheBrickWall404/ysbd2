@@ -397,3 +397,4 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
     BF_Block_Destroy(&block);
     return result;
 }
+
