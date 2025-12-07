@@ -7,10 +7,25 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Βοηθητικό Macro για errors της BF
+// --- ΜΑΚΡΟΕΝΤΟΛΗ ΓΙΑ ΕΛΕΓΧΟ ΛΑΘΩΝ BF ---
+// Πρέπει να οριστεί εδώ, ΠΡΙΝ από οποιαδήποτε χρήση της μέσα στις συναρτήσεις.
 #define CALL_BF(call) { BF_ErrorCode c = call; if (c != BF_OK) { BF_PrintError(c); return -1; } }
 
+// --- Δομή για την επιστροφή από την αναδρομή (Member B) ---
+typedef struct {
+    int split;        // 1 αν έγινε split
+    int new_block_id; // Το ID του νέου δεξιού block
+    int mid_key;      // Το κλειδί που ανεβαίνει στον πατέρα
+    int error;        // 1 αν υπήρξε σφάλμα (π.χ. duplicate key, BF error)
+} InsertResult;
+
+// Forward declaration της αναδρομικής συνάρτησης
+InsertResult _insert_recursive(int file_desc, int current_block_id, const Record* record, const TableSchema* schema);
+
+
+// ==========================================================
 // --- Υλοποίηση Member A (Create, Open, Close, Find) ---
+// ==========================================================
 
 int bplus_create_file(const TableSchema *schema, const char *fileName)
 {
@@ -67,7 +82,6 @@ int bplus_open_file(const char *fileName, int *file_desc, BPlusMeta **metadata)
     }
 
     // 4. Φόρτωση metadata στη μνήμη (Heap)
-    // Ο caller θα πρέπει να ελευθερώσει αυτή τη μνήμη στο Close
     *metadata = malloc(sizeof(BPlusMeta));
     memcpy(*metadata, stored_meta, sizeof(BPlusMeta));
 
@@ -140,7 +154,6 @@ int bplus_record_find(int file_desc, const BPlusMeta *metadata, int key, Record*
             }
 
             // Αλλαγή μπλοκ
-            int prev_id = current_block_id;
             current_block_id = next_id;
             
             BF_UnpinBlock(block); // Ξεκαρφίτσωμα τρέχοντος
@@ -177,17 +190,10 @@ int bplus_record_find(int file_desc, const BPlusMeta *metadata, int key, Record*
     }
 }
 
+
+// ==========================================================
 // --- Υλοποίηση Member B (Insert & Helpers) ---
-
-// Δομή για την επιστροφή από την αναδρομή
-typedef struct {
-    int split;        // 1 αν έγινε split
-    int new_block_id; // Το ID του νέου δεξιού block
-    int mid_key;      // Το κλειδί που ανεβαίνει στον πατέρα
-    int error;        // 1 αν υπήρξε σφάλμα (π.χ. duplicate key, BF error)
-} InsertResult;
-
-InsertResult _insert_recursive(int file_desc, int current_block_id, const Record* record, const TableSchema* schema);
+// ==========================================================
 
 int bplus_record_insert(int file_desc, BPlusMeta *metadata, const Record *record)
 {
@@ -395,7 +401,6 @@ InsertResult _insert_recursive(int file_desc, int current_block_id, const Record
                 BF_Block_Init(&new_idx);
                 if (BF_AllocateBlock(file_desc, new_idx) != BF_OK) {
                    result.error = 1;
-                   // No cleanup needed here as new_idx failed
                 } else {
                     int new_idx_id;
                     BF_GetBlockCounter(file_desc, &new_idx_id); 
